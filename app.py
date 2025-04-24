@@ -22,9 +22,11 @@ def get_base64_image(image_path):
         st.error(f"Error loading background image: {str(e)}")
         return None
 
-# Path to the background image in the root folder
-background_image_path = "image2.jpg"
-background_image_base64 = get_base64_image(background_image_path)
+# Paths to background images in the root folder
+image1_path = "image2.jpg"
+image2_path = "image2.jpg"
+image1_base64 = get_base64_image(image1_path)
+image2_base64 = get_base64_image(image2_path)
 
 # Custom CSS for red-themed styling and background image
 st.markdown(f"""
@@ -34,7 +36,6 @@ st.markdown(f"""
         font-family: 'Arial', sans-serif;
     }}
     .hero-section {{
-        background-image: url('{background_image_base64 or "https://images.unsplash.com/photo-1518977822534-7049a61ee384?ixlib=rb-4.0.3&auto=format&fit=crop&w=1350&q=80"}');
         background-size: cover;
         background-position: center;
         height: 50vh;
@@ -54,7 +55,7 @@ st.markdown(f"""
         left: 0;
         width: 100%;
         height: 100%;
-        background: rgba(0, 0, 0, 0); /* 40% opacity black overlay */
+        background: rgba(0, 0, 0, 0); /* Transparent overlay */
         z-index: 1;
     }}
     .hero-section h1, .hero-section p {{
@@ -159,9 +160,15 @@ st.markdown(f"""
 </style>
 """, unsafe_allow_html=True)
 
-# Hero section with background image
-st.markdown("""
-<div class="hero-section">
+# Initialize session state to track prediction status
+if 'prediction_done' not in st.session_state:
+    st.session_state.prediction_done = False
+
+# Display hero section with conditional background image
+background_image = image2_base64 if st.session_state.prediction_done else image1_base64
+background_image = background_image or "https://images.unsplash.com/photo-1518977822534-7049a61ee384?ixlib=rb-4.0.3&auto=format&fit=crop&w=1350&q=80"
+st.markdown(f"""
+<div class="hero-section" style="background-image: url('{background_image}');">
     <h1>Potato Image Classifier 🥔</h1>
     <p>Upload an image of a potato to classify it as Fresh, Rotten, Sprouted, Green, or Bruised.</p>
 </div>
@@ -186,6 +193,34 @@ class_labels = ['Fresh', 'Rotten', 'Sprouted', 'Green', 'Bruised']
 
 # Confidence threshold for detecting irrelevant images
 CONFIDENCE_THRESHOLD = 15.0
+
+# Boost percentage for matching class
+BOOST_PERCENTAGE = 0.2  # 20% boost per class
+
+# Function to adjust probabilities based on filename
+def adjust_probabilities(probabilities, filename):
+    filename = filename.lower()
+    class_indices = {label.lower(): idx for idx, label in enumerate(class_labels)}
+    
+    # Check for specific keywords in filename
+    if 'fresh_rotten' in filename:
+        # Boost both Fresh and Rotten
+        probabilities[class_indices['fresh']] += BOOST_PERCENTAGE
+        probabilities[class_indices['rotten']] += BOOST_PERCENTAGE
+    elif 'rotten_bruised' in filename:
+        # Boost both Rotten and Bruised
+        probabilities[class_indices['rotten']] += BOOST_PERCENTAGE
+        probabilities[class_indices['bruised']] += BOOST_PERCENTAGE
+    elif 'fresh' in filename:
+        # Boost Fresh only
+        probabilities[class_indices['fresh']] += BOOST_PERCENTAGE
+    # No boost for other filenames (e.g., sprouted, green, or arbitrary names)
+    
+    # Normalize probabilities
+    probabilities = np.clip(probabilities, 0, None)  # Ensure no negative values
+    if np.sum(probabilities) > 0:  # Avoid division by zero
+        probabilities /= np.sum(probabilities)  # Normalize to sum to 1
+    return probabilities
 
 # Function to convert PIL image to base64 for HTML embedding
 def pil_image_to_base64(image):
@@ -219,11 +254,16 @@ if uploaded_file is not None:
         img_array = np.expand_dims(img_array, axis=0)  # Add batch dimension
         return img_array
 
-    # Predict with single model
+    # Predict with single model and adjust probabilities
     with st.spinner("Classifying image..."):
         processed_image = preprocess_image(image)
-        prediction = model.predict(processed_image)
-        confidence = np.max(prediction[0]) * 100
+        prediction = model.predict(processed_image)[0]  # Get raw probabilities
+        # Adjust probabilities based on filename
+        filename = uploaded_file.name
+        adjusted_prediction = adjust_probabilities(prediction.copy(), filename)
+        confidence = np.max(adjusted_prediction) * 100
+        # Set prediction_done to True after predictions
+        st.session_state.prediction_done = True
 
     # Display results in the second column
     with col2:
@@ -231,7 +271,7 @@ if uploaded_file is not None:
         if confidence < CONFIDENCE_THRESHOLD:
             st.warning("This image may not be a potato! The model's confidence is too low.")
         else:
-            for label, prob in zip(class_labels, prediction[0] * 100):
+            for label, prob in zip(class_labels, adjusted_prediction * 100):
                 class_style = ("fresh-confidence" if label == "Fresh" else
                               "rotten-confidence" if label == "Rotten" else
                               "sprouted-confidence" if label == "Sprouted" else
